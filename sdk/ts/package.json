@@ -1,0 +1,17 @@
+{
+  "name": "cellblock-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for cellblock code-execution sandboxes",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": ["src"],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=22.18" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}
