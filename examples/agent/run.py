@@ -44,7 +44,8 @@ def run_agent(model: Model, sandbox: Sandbox, question: str, log=print) -> str:
             return "".join(b.get("text", "") for b in turn["content"] if b["type"] == "text")
         results = []
         for call in calls:  # all results go back in ONE user message
-            log(f"-> tool {call['name']}: {call['input'].get('code', '').splitlines()[0][:60]}")
+            first_line = (call["input"].get("code") or "").splitlines()[:1] or [""]
+            log(f"-> tool {call['name']}: {first_line[0][:60]}")
             output = execute_tool(sandbox, call["name"], call["input"])
             log(f"<- {output}")
             results.append({"type": "tool_result", "tool_use_id": call["id"], "content": output})

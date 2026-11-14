@@ -30,4 +30,5 @@ packages = ["src/cellblock", "src/cellblock_sdk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = ["docker: needs a running Docker daemon"]
