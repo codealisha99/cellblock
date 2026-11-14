@@ -137,9 +137,12 @@ class DockerBackend:
     def mkdir(self, sandbox_id: str, path: str) -> None:
         self._run(sandbox_id, ["mkdir", "-p", "--", path])
 
-    def read_file(self, sandbox_id: str, path: str) -> bytes:
+    def read_file(self, sandbox_id: str, path: str) -> Iterator[bytes]:
         # put/get_archive cannot see tmpfs mounts (where /workspace lives), so go through exec.
-        return self._run(sandbox_id, ["cat", "--", path])
+        # Streamed so a large file never sits whole in control-plane memory. Exit status is not
+        # checked here; the service has already confirmed the file exists.
+        _, output = self._container(sandbox_id).exec_run(["cat", "--", path], demux=False, stream=True)
+        return output
 
     def write_file(self, sandbox_id: str, path: str, data: bytes) -> None:
         self._exec_with_stdin(sandbox_id, ["sh", "-c", 'cat > "$1"', "cb-write", path], data)

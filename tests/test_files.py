@@ -16,9 +16,17 @@ def sb(service, key):
 def test_write_read_list_roundtrip_with_binary(service, key, sb):
     blob = bytes(range(256)) * 4
     service.write_file(key, sb, "data/nested/blob.bin", blob)
-    assert service.read_file(key, sb, "data/nested/blob.bin") == blob
+    assert b"".join(service.read_file(key, sb, "data/nested/blob.bin")) == blob
     listing = service.list_files(key, sb, "data/nested")
     assert listing == [{"name": "blob.bin", "type": "file", "size": len(blob)}]
+
+
+def test_large_download_streams_intact(service, key, sb):
+    blob = bytes(range(256)) * 16384  # 4 MiB, several chunks
+    service.write_file(key, sb, "big.bin", blob)
+    chunks = list(service.read_file(key, sb, "big.bin"))
+    assert len(chunks) > 1
+    assert b"".join(chunks) == blob
 
 
 def test_missing_and_directory_reads(service, key, sb):
@@ -44,3 +52,33 @@ def test_symlink_escape_is_rejected(service, key, sb):
     with pytest.raises(BadRequest):
         service.write_file(key, sb, "escape/pwned", b"x")
     assert collect(service.exec_stream(key, sb, ["sh", "-c", "ls /etc/pwned"], 10))["exit_code"] != 0
+
+
+
+def _api_sandbox(service, key):
+    """Sandboxes are owned by the key *id* that authentication returns, not the raw key string."""
+    kid = service.authenticate(key)
+    spec = SandboxSpec(image="python:3.12-slim", cpu=1.0, memory_mb=256, pids=128, network=False, workspace_mb=64)
+    return kid, service.create_sandbox(kid, spec, ttl_s=600)["id"]
+
+
+def test_download_endpoint_returns_full_bytes(api, service, key):
+    client, _ = api
+    kid, sid = _api_sandbox(service, key)
+    blob = b"z" * (3 * 1024 * 1024)
+    service.write_file(kid, sid, "d.bin", blob)
+    r = client.get(f"/v1/sandboxes/{sid}/files/content", params={"path": "d.bin"},
+                   headers={"Authorization": f"Bearer {key}"})
+    assert r.status_code == 200 and r.content == blob
+
+
+def test_oversized_upload_is_refused_and_not_written(api, service, key, monkeypatch):
+    import cellblock.api as api_module
+
+    client, _ = api
+    kid, sid = _api_sandbox(service, key)
+    monkeypatch.setattr(api_module, "MAX_UPLOAD_BYTES", 1000)
+    r = client.put(f"/v1/sandboxes/{sid}/files/content", params={"path": "big.bin"}, content=b"x" * 1001,
+                   headers={"Authorization": f"Bearer {key}"})
+    assert r.status_code == 400
+    assert service.list_files(kid, sid, "/workspace") == []

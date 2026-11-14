@@ -39,8 +39,8 @@ def test_snapshot_restore_preserves_files(service, key):
     service.write_file(key, src, "data.bin", bytes(range(200)))
     template = service.snapshot(key, src, "baseline")
     dst = service.create_sandbox(key, _spec(), ttl_s=600, snapshot_id=template["id"])["id"]
-    assert service.read_file(key, dst, "proj/main.py") == b"print('hi')"
-    assert service.read_file(key, dst, "data.bin") == bytes(range(200))
+    assert b"".join(service.read_file(key, dst, "proj/main.py")) == b"print('hi')"
+    assert b"".join(service.read_file(key, dst, "data.bin")) == bytes(range(200))
     other = service.create_key("other")
     with pytest.raises(NotFound):
         service.create_sandbox(other, _spec(), ttl_s=600, snapshot_id=template["id"])
@@ -86,3 +86,16 @@ def test_warm_pool_claims_prestarted_container(settings, backend, key):
     svc.shutdown()
     assert spare not in backend.list_managed()  # unclaimed pool containers never outlive the control plane
     assert pooled in backend.list_managed()     # claimed sandboxes are owned by a client and survive it
+
+
+def test_pooled_container_survives_restart_as_pooled(settings, backend):
+    settings = settings.__class__(**{**settings.__dict__, "pool_size": 1})
+    svc = Service(settings, Store(settings.db_path), backend)
+    svc.refill_pool()
+    pooled = svc.store.find("sandboxes", status="pooled")[0]["id"]
+    restarted = Service(settings, Store(settings.db_path), backend)  # "restart" while the pool container still runs
+    restarted.reconcile()
+    assert restarted.store.get("sandboxes", pooled)["status"] == "pooled"  # not promoted to an ownerless "running" row
+    assert restarted.pool_ready() == 1
+    restarted.shutdown()
+    assert pooled not in backend.list_managed()  # so the shutdown guarantee still holds after a restart

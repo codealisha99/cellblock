@@ -10,10 +10,10 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from cellblock.backends.base import Backend, SandboxSpec
 from cellblock.backends.docker import DockerBackend
@@ -85,6 +85,18 @@ def _sse_response(events: Iterator[dict[str, Any]]) -> StreamingResponse:
             yield _sse(event)
 
     return StreamingResponse(body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+async def _read_capped(request: Request, limit: int) -> bytes:
+    """Read the request body, refusing as soon as it passes `limit` rather than buffering it all first."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise BadRequest(f"upload exceeds {limit} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def _every(fn: Callable[[], Any], interval_s: float) -> None:
@@ -160,16 +172,16 @@ def _fs_routes(router: APIRouter, service: Service, auth: Callable[..., str]) ->
         return service.list_files(key, sandbox_id, path)
 
     @router.get("/sandboxes/{sandbox_id}/files/content")
-    def download(sandbox_id: str, path: str = Query(...), key: str = Depends(auth)) -> Response:
-        data = service.read_file(key, sandbox_id, path)
-        return Response(content=data, media_type="application/octet-stream")
+    def download(sandbox_id: str, path: str = Query(...), key: str = Depends(auth)) -> StreamingResponse:
+        chunks = service.read_file(key, sandbox_id, path)  # checks run now, so errors still return as JSON
+        return StreamingResponse(chunks, media_type="application/octet-stream")
 
     @router.put("/sandboxes/{sandbox_id}/files/content")
-    def upload(sandbox_id: str, path: str = Query(...), data: bytes = Body(..., media_type="application/octet-stream"),
-               key: str = Depends(auth)) -> dict[str, Any]:
-        if len(data) > MAX_UPLOAD_BYTES:
-            raise BadRequest(f"upload exceeds {MAX_UPLOAD_BYTES} bytes")
-        return {"path": service.write_file(key, sandbox_id, path, data), "bytes": len(data)}
+    async def upload(sandbox_id: str, request: Request, path: str = Query(...),
+                     key: str = Depends(auth)) -> dict[str, Any]:
+        data = await _read_capped(request, MAX_UPLOAD_BYTES)
+        written = await run_in_threadpool(service.write_file, key, sandbox_id, path, data)
+        return {"path": written, "bytes": len(data)}
 
 
 def _template_routes(router: APIRouter, service: Service, auth: Callable[..., str]) -> None:

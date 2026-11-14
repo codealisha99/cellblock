@@ -24,6 +24,7 @@ from cellblock.store import Store
 
 log = logging.getLogger("cellblock")
 RECORD_LIMIT = 64 * 1024  # bytes of stdout/stderr kept per exec for `cellblock logs`
+COLLECT_LIMIT = 16 * 1024 * 1024  # chars per stream returned inline by the non-streaming endpoints
 RUNTIME_LANGS = {"python": ["python3", "-u"], "node": ["node"]}
 FILE_KINDS = {"f": "file", "d": "dir", "l": "symlink"}
 
@@ -41,17 +42,25 @@ def _public(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect(events: Iterator[dict[str, Any]]) -> dict[str, Any]:
-    """Fold a stream of exec events into one JSON-able result."""
-    result: dict[str, Any] = {"stdout": "", "stderr": "", "exit_code": None, "timed_out": False}
+def collect(events: Iterator[dict[str, Any]], limit: int = COLLECT_LIMIT) -> dict[str, Any]:
+    """Fold a stream of exec events into one JSON-able result. Each stream keeps at most `limit`
+    characters; anything past that is dropped and flagged in `truncated`."""
+    chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
+    room = {"stdout": limit, "stderr": limit}
+    result: dict[str, Any] = {"exit_code": None, "timed_out": False, "truncated": False}
     for event in events:
-        if event["type"] in ("stdout", "stderr"):
-            result[event["type"]] += event["data"]
-        elif event["type"] == "started":
+        kind = event["type"]
+        if kind in chunks:
+            kept = event["data"][: room[kind]]
+            room[kind] -= len(kept)
+            if len(kept) < len(event["data"]):
+                result["truncated"] = True
+            chunks[kind].append(kept)
+        elif kind == "started":
             result["exec_id"] = event["exec_id"]
-        elif event["type"] == "exit":
+        elif kind == "exit":
             result.update(exit_code=event["exit_code"], timed_out=event["timed_out"])
-    return result
+    return {"stdout": "".join(chunks["stdout"]), "stderr": "".join(chunks["stderr"]), **result}
 
 
 def _exec_public(row: dict[str, Any]) -> dict[str, Any]:
@@ -273,7 +282,7 @@ class Service:
         return [{"name": name, "type": FILE_KINDS.get(t, "other"), "size": size}
                 for t, size, name in self.backend.list_dir(sandbox_id, resolved)]
 
-    def read_file(self, key_id: str, sandbox_id: str, raw: str) -> bytes:
+    def read_file(self, key_id: str, sandbox_id: str, raw: str) -> Iterator[bytes]:
         self._running(key_id, sandbox_id)
         resolved, kind = self._checked_path(sandbox_id, raw)
         if kind == "none":
@@ -353,7 +362,7 @@ class Service:
                 lost.append(sandbox_id)
                 self.store.update("sandboxes", sandbox_id, {"status": "deleted" if row["status"] == "pooled" else "lost"})
                 self.backend.destroy(sandbox_id)
-            elif runtime != row["status"]:
+            elif row["status"] != "pooled" and runtime != row["status"]:  # pooled rows have no owner; keep them in the pool
                 synced.append(sandbox_id)
                 self.store.update("sandboxes", sandbox_id, {"status": runtime})
         orphans = [sid for sid in live if sid not in rows]

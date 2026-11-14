@@ -48,7 +48,7 @@ def test_timeout_kills_command_and_its_children(service, key):
         key, sid, ["sh", "-c", "sleep 300 & echo $! > /workspace/child.pid; wait"], 2))
     assert time.monotonic() - started < 15
     assert result["timed_out"] is True and result["exit_code"] == 124
-    child = service.read_file(key, sid, "child.pid").decode().strip()
+    child = b"".join(service.read_file(key, sid, "child.pid")).decode().strip()
     alive = collect(service.exec_stream(key, sid, ["sh", "-c", f"kill -0 {child} 2>/dev/null && echo alive || echo dead"], 10))
     assert alive["stdout"].strip() == "dead"
 
