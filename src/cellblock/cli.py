@@ -8,6 +8,7 @@ import sys
 
 from cellblock.config import Settings
 from cellblock_sdk import Sandbox
+from cellblock_sdk.client import ApiError
 
 
 def _client():
@@ -96,7 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except ApiError as exc:  # report the server's message, not a traceback
+        sys.exit(f"error: {exc.message}")
 
 
 if __name__ == "__main__":
