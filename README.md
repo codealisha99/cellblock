@@ -1,5 +1,7 @@
 # cellblock
 
+[![ci](https://github.com/codealisha99/cellblock/actions/workflows/ci.yml/badge.svg)](https://github.com/codealisha99/cellblock/actions/workflows/ci.yml)
+
 Code-execution sandboxes for AI agents: an HTTP control plane (port **4300**) that creates hardened
 containers on demand, runs commands and code with streamed output, moves files in and out, snapshots
 workspaces into reusable templates, and reaps everything that is abandoned. Ships with a Python SDK,
