@@ -6,3 +6,4 @@ data/
 .env
 sdk/ts/node_modules/
 sdk/ts/dist/
+.coverage
