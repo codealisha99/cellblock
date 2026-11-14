@@ -5,10 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cellblock: sandboxes for code an AI agent wrote</title>
   <meta name="description" content="cellblock starts hardened Docker containers on demand for AI agents, streams output as it runs, moves files, snapshots workspaces, and reaps abandoned sandboxes. Recorded real run, honest limits.">
+  <link rel="canonical" href="https://cellblock-site.vercel.app/">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://cellblock-site.vercel.app/">
   <meta property="og:title" content="cellblock: sandboxes for code an AI agent wrote">
-  <meta property="og:description" content="Hardened containers on demand for agent-written code, with a recorded run and an honest list of what isolation does not cover.">
-  <meta name="twitter:card" content="summary">
+  <meta property="og:description" content="Hardened containers on demand for agent-written code. A recorded run of a fork bomb being contained, and an honest list of what isolation does not cover.">
+  <meta property="og:image" content="https://cellblock-site.vercel.app/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="cellblock: sandboxes for code an AI agent wrote">
+  <meta name="twitter:image" content="https://cellblock-site.vercel.app/og.png">
   <meta name="theme-color" content="#15191C">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -17,63 +24,74 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header class="top">
     <a class="mark" href="#top" aria-label="cellblock home">cellblock</a>
     <nav aria-label="Primary">
-      <a href="#run">Recorded run</a>
+      <a href="#top">Recorded run</a>
+      <a href="#hard">Stopping code</a>
       <a href="#limits">Limits</a>
       <a href="#use">Use it</a>
+      <a href="#code">Code map</a>
       <a href="https://github.com/codealisha99/cellblock">GitHub</a>
     </nav>
   </header>
 
-  <main id="top">
-    <section class="hero">
-      <h1>Sandboxes for code an AI agent wrote.</h1>
-      <p class="lede">cellblock starts a hardened container on demand, streams the output back while the code runs,
-        moves files in and out, snapshots a workspace, and removes anything left behind. It is an HTTP service on
-        port 4300 with Python and TypeScript SDKs.</p>
-
-      <aside class="status" aria-label="Live demo status">
-        <p><strong>No live demo.</strong> This page has no backend and runs no visitor code. Containers share the
-          host kernel, which is not a boundary to trust with strangers' code, so there is nothing to try here. The
-          replay below is a recording of a real run.</p>
-      </aside>
-
-      <div class="boundary" aria-hidden="true"></div>
-    </section>
-
-    <section id="run" class="block">
-      <div class="block-head">
-        <h2>A real run, replayed</h2>
-        <p>Every line is what the sandbox returned when <code>scripts/record_session.py</code> ran against Docker
-          29.7.2. The fork bomb, the memory limit, and the network probe are not simulated.</p>
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <h1>Sandboxes for code an AI agent wrote.</h1>
+        <p class="lede">cellblock starts a hardened container on demand, streams output while the code runs,
+          moves files in and out, snapshots a workspace, and reaps anything left behind. It is an HTTP service on
+          port 4300 with Python and TypeScript SDKs.</p>
+        <div class="actions">
+          <a class="btn primary" href="https://github.com/codealisha99/cellblock">View on GitHub</a>
+          <button type="button" class="btn" id="hero-replay" data-replay>Replay the run</button>
+          <a class="btn ghost" href="#use">SDK quickstart</a>
+        </div>
+        <p class="proof-note">Recorded run, scripted model, Docker 29.7.2. Nothing on this page executes visitor code.</p>
       </div>
+
       <div class="terminal" id="terminal" role="region" aria-label="Recorded terminal session">
         <div class="term-bar">
           <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
           <span class="term-title">recorded session</span>
-          <button type="button" id="replay" class="btn" disabled>Replay</button>
+          <button type="button" id="speed" class="btn small ghost" disabled>1x</button>
+          <button type="button" id="replay" class="btn small" disabled>Replay</button>
         </div>
-        <pre class="term-body" id="term-body" tabindex="0"><span class="muted">Loading recording...</span></pre>
+        <nav class="markers" aria-label="Jump to a probe">
+          <button type="button" data-jump="sdk" disabled>SDK use</button>
+          <button type="button" data-jump="fork" disabled>Fork bomb</button>
+          <button type="button" data-jump="oom" disabled>Memory</button>
+          <button type="button" data-jump="net" disabled>Network</button>
+          <button type="button" data-jump="fs" disabled>Filesystem</button>
+          <button type="button" data-jump="snap" disabled>Snapshot</button>
+        </nav>
+        <pre class="term-body" id="term-body" tabindex="0" aria-live="off"><span class="muted">Loading recording...</span></pre>
       </div>
     </section>
 
-    <section class="block split">
-      <div>
-        <h2>The hard part is stopping code</h2>
-        <p>Starting a container is easy. Stopping model-written code is not. A fork bomb must not wedge the sandbox.
-          A timeout must take its grandchildren with it. SQLite and Docker must agree after a crash. Warm create
-          should cost a database update, and cold create should stay honest about its cost.</p>
-      </div>
-      <div class="prose">
-        <p>Each exec runs in its own session. Its process group is recorded in a tmpfs file, so a kill needs only shell
-          builtins. Once a fork bomb has used up the pids budget, a forked <code>grep</code> cannot start, and that
-          is exactly the failure a test found and this design fixes.</p>
-        <p>Paths are normalized on the host, and then the symlink-resolved path is checked again inside the container
-          before any read or write. Startup reconciliation removes containers with no row and marks rows whose
-          container has gone as lost.</p>
-      </div>
+    <section id="hard" class="block">
+      <p class="pull">Starting a container is easy. Stopping model-written code is not. A fork bomb must not wedge the
+        sandbox, a timeout must take its grandchildren with it, and SQLite and Docker must agree after a crash.</p>
+      <ol class="mechanisms">
+        <li>
+          <h3>Exec is killable by group</h3>
+          <p>Each exec runs in its own session. Its process group id goes to a tmpfs file, so a kill needs only
+            shell builtins. Once a fork bomb has used the pids budget, a forked <code>grep</code> cannot start.
+            That failure showed up in a test, and this design fixes it.</p>
+        </li>
+        <li>
+          <h3>Paths are checked twice</h3>
+          <p>Paths are normalized on the host, and any <code>..</code> is rejected outright. The symlink-resolved
+            path is checked again inside the container before any read or write.</p>
+        </li>
+        <li>
+          <h3>Startup reconciles both sides</h3>
+          <p>Containers with no database row are removed. Rows whose container has gone are marked lost. A warm
+            create costs a database update, and a cold create stays honest about its cost.</p>
+        </li>
+      </ol>
     </section>
 
     <section class="block">
@@ -81,18 +99,18 @@
         <h2>Create latency, measured on this machine</h2>
         <p id="latency-caption">Loading samples...</p>
       </div>
-      <div class="chart" id="chart" aria-label="Create latency range chart"></div>
+      <div class="latency" id="chart" aria-label="Create latency comparison"></div>
     </section>
 
     <section id="limits" class="block">
       <div class="block-head">
         <h2>What the hardening blocks, and what it does not</h2>
-        <p>The left column is each probe from the replay with its observed result. The right column is what a
-          container boundary leaves open. Read both before running anything you did not write.</p>
+        <p>Left: each probe from the replay with its observed result. Right: what a container boundary leaves open.
+          Read both before running anything you did not write.</p>
       </div>
-      <div class="limits">
-        <div>
-          <h3>Blocked, observed in the run</h3>
+      <div class="verdict">
+        <div class="panel blocked">
+          <h3><span class="count">6</span> blocked, observed in the run</h3>
           <ul class="ticks">
             <li><span>Fork bomb.</span> The pids cap stopped it, and the sandbox ran <code>echo</code> afterwards.</li>
             <li><span>400 MiB allocation under a 256 MiB limit.</span> Killed with exit 137. Swap is disabled.</li>
@@ -103,8 +121,8 @@
               <code>host.docker.internal</code> resolves to the sandbox's own loopback.</li>
           </ul>
         </div>
-        <div>
-          <h3>Not blocked by a container</h3>
+        <div class="panel open">
+          <h3><span class="count">6</span> not blocked by a container</h3>
           <ul class="crosses">
             <li><span>Kernel exploits.</span> All containers share the host kernel. Untrusted code in production
               needs a microVM such as Firecracker or Kata, or gVisor.</li>
@@ -128,9 +146,9 @@
           interface. Nothing above the seam changes, but it is not built.</p>
       </div>
       <figure class="diagram">
-        <svg viewBox="0 0 880 330" role="img" aria-labelledby="arch-title arch-desc">
+        <svg viewBox="0 0 880 352" role="img" aria-labelledby="arch-title arch-desc">
           <title id="arch-title">Architecture</title>
-          <desc id="arch-desc">Python SDK, TypeScript SDK, CLI and an agent loop call the control plane on port 4300 with a bearer key. The control plane uses SQLite for state and a backend protocol. The Docker backend runs hardened containers. A dashed line marks the host kernel boundary, and a dotted Firecracker box is marked as not built.</desc>
+          <desc id="arch-desc">Python SDK, TypeScript SDK, CLI and an agent loop call the control plane on port 4300 with a bearer key. The control plane uses SQLite for state and a backend protocol. The Docker backend runs hardened containers. A line marks the host kernel boundary, which containers share. Firecracker is marked as not built.</desc>
           <g class="d-clients">
             <rect x="10" y="20" width="200" height="50" rx="2"/><text x="24" y="50">Python SDK</text>
             <rect x="10" y="90" width="200" height="50" rx="2"/><text x="24" y="120">TypeScript SDK</text>
@@ -156,23 +174,49 @@
             <text x="594" y="76">DockerBackend: hardened containers</text>
             <text x="594" y="100">Firecracker, not built (KVM host needed)</text>
           </g>
-          <line class="d-boundary" x1="578" y1="150" x2="868" y2="150"/>
-          <text class="d-label" x="578" y="172">host kernel boundary: containers share it</text>
+          <line class="d-boundary" x1="578" y1="160" x2="868" y2="160"/>
+          <text class="d-label" x="578" y="182">host kernel boundary</text>
+          <text class="d-label" x="578" y="198">containers share the kernel</text>
           <g class="d-sandboxes">
-            <rect x="578" y="190" width="132" height="90" rx="2"/>
-            <text x="590" y="216">sandbox</text>
-            <text x="590" y="236">uid 1000</text>
-            <text x="590" y="256">cap-drop ALL</text>
-            <text x="590" y="272">read-only root</text>
-            <rect x="724" y="190" width="144" height="90" rx="2"/>
-            <text x="736" y="216">warm pool</text>
-            <text x="736" y="236">pre-started</text>
-            <text x="736" y="256">claimed by a row</text>
+            <rect x="578" y="214" width="132" height="90" rx="2"/>
+            <text x="590" y="240">sandbox</text>
+            <text x="590" y="260">uid 1000</text>
+            <text x="590" y="280">cap-drop ALL</text>
+            <text x="590" y="296">read-only root</text>
+            <rect x="724" y="214" width="144" height="90" rx="2"/>
+            <text x="736" y="240">warm pool</text>
+            <text x="736" y="260">pre-started</text>
+            <text x="736" y="280">claimed by a row</text>
           </g>
-          <line class="d-hz" x1="578" y1="300" x2="868" y2="300"/>
-          <text class="d-label" x="578" y="320">network off by default</text>
+          <line class="d-hz" x1="578" y1="324" x2="868" y2="324"/>
+          <text class="d-label" x="578" y="344">network off by default</text>
         </svg>
       </figure>
+    </section>
+
+    <section id="code" class="block">
+      <div class="block-head">
+        <h2>Where to look in the code</h2>
+        <p>If you read one thing, read these. Each file holds one of the parts the replay exercises.</p>
+      </div>
+      <ol class="code-map">
+        <li>
+          <a href="https://github.com/codealisha99/cellblock/blob/main/src/cellblock/backends/docker.py"><code>backends/docker.py</code></a>
+          <p>Exec is started under <code>setsid</code>, and its group is recorded in tmpfs so a kill is shell builtins only. The container flags (read-only root, cap-drop ALL, pids limit, no swap) live here too.</p>
+        </li>
+        <li>
+          <a href="https://github.com/codealisha99/cellblock/blob/main/src/cellblock/paths.py"><code>paths.py</code></a>
+          <p>Rejects <code>..</code> segments before anything else, then resolves symlinks inside the container.</p>
+        </li>
+        <li>
+          <a href="https://github.com/codealisha99/cellblock/blob/main/src/cellblock/service.py"><code>service.py</code></a>
+          <p>Warm claim, quota, exec records, and <code>reconcile()</code>, which decides what is an orphan and what is lost after a restart.</p>
+        </li>
+        <li>
+          <a href="https://github.com/codealisha99/cellblock/blob/main/src/cellblock/store.py"><code>store.py</code></a>
+          <p>The SQLite schema and the row updates that make a warm create cheap.</p>
+        </li>
+      </ol>
     </section>
 
     <section id="use" class="block">
@@ -181,7 +225,7 @@
         <p>The keyless demo needs only Docker and <code>uv</code>. It starts the server on :4300 with an isolated
           home, runs the agent example through the SDK, measures create latency, and cleans up.</p>
       </div>
-      <pre class="code"><code>make install        # uv sync (Python 3.12) + pnpm install (TS SDK)
+      <pre class="code" tabindex="0"><code>make install        # uv sync (Python 3.12) + pnpm install (TS SDK)
 make demo           # keyless end-to-end run
 make test           # 62 Python tests (unit + real-Docker integration)
 make test-ts        # 5 TypeScript SDK tests (starts its own server on :4300)</code></pre>
@@ -189,7 +233,7 @@ make test-ts        # 5 TypeScript SDK tests (starts its own server on :4300)</c
       <div class="snippets">
         <div>
           <h3>Python</h3>
-          <pre class="code"><code>from cellblock_sdk import Sandbox
+          <pre class="code" tabindex="0"><code>from cellblock_sdk import Sandbox
 
 with Sandbox(memory_mb=256, ttl_seconds=600) as sb:
     print(sb.run_code("print(sum(range(10)))").stdout)   # "45\n"
@@ -201,7 +245,7 @@ with Sandbox(snapshot_id=template["id"]) as sb2:         # restored files are pr
         </div>
         <div>
           <h3>TypeScript</h3>
-          <pre class="code"><code>import { Sandbox } from "./sdk/ts/src/index.ts";
+          <pre class="code" tabindex="0"><code>import { Sandbox } from "./sdk/ts/src/index.ts";
 
 const sb = await Sandbox.create({ memoryMb: 256 });
 await sb.runCode("print('hi')", {
@@ -213,21 +257,21 @@ await sb.delete();</code></pre>
       </div>
     </section>
 
-    <section class="block closing">
-      <h2>Known limits</h2>
-      <ul class="plain">
-        <li>Single node. No multi-host scheduling and no metrics endpoint.</li>
-        <li>No TLS and no rate limiting. Put it behind a reverse proxy.</li>
-        <li>The live model path has not been run against the Anthropic API. The build had no key, and the demo uses a scripted model.</li>
-        <li><code>run_code</code> in <code>node</code> needs a node image. <code>node:22-alpine</code> is on the allowlist and tested.</li>
-        <li>Images must be on the allowlist, and templates have no per-key disk quota.</li>
-      </ul>
+    <section class="block closing" aria-labelledby="limits-known">
+      <h2 id="limits-known">Known limits</h2>
+      <ol class="plain">
+        <li><span>No live demo.</span> This page has no backend. Containers share the host kernel, which is not a boundary to trust with strangers' code, so the replay is the only thing to look at.</li>
+        <li><span>Single node.</span> No multi-host scheduling and no metrics endpoint.</li>
+        <li><span>No TLS, no rate limiting.</span> Put it behind a reverse proxy.</li>
+        <li><span>Live model not run.</span> The build had no Anthropic API key, so the demo uses a scripted model.</li>
+        <li><span>Node needs an image.</span> <code>run_code</code> in <code>node</code> needs <code>node:22-alpine</code>, which is on the allowlist and tested.</li>
+        <li><span>Templates have no quota.</span> Images must be on the allowlist, and templates have no per-key disk quota.</li>
+      </ol>
     </section>
   </main>
 
   <footer class="foot">
-    <p>MIT licensed. <a href="https://github.com/codealisha99/cellblock">Source on GitHub</a>. Live demo: none, for the
-      reasons above.</p>
+    <p>MIT licensed. <a href="https://github.com/codealisha99/cellblock">Source on GitHub</a>.</p>
   </footer>
 
   <script src="app.js" defer></script>

@@ -13,6 +13,8 @@ and getting **warm create** down to a row update while cold create stays honest 
 
 **Landing page:** https://cellblock-site.vercel.app (recorded run, latency, limits, SDK snippets)
 
+![Recorded run: a fork bomb is contained and the sandbox keeps answering](docs/replay.png)
+
 **Live demo:** none. The control plane needs a Docker daemon, and it must not run visitors' code on shared-kernel
 containers. Run it locally with the quickstart below.
 
