@@ -17,7 +17,7 @@ from typing import Any
 
 from cellblock.backends.base import EXIT_TIMED_OUT, Backend, SandboxSpec
 from cellblock.config import Settings
-from cellblock.errors import BadRequest, Conflict, NotFound, QuotaExceeded, Unauthorized
+from cellblock.errors import BadRequest, Conflict, ImageNotAllowed, NotFound, QuotaExceeded, Unauthorized
 from cellblock.ids import new_id
 from cellblock.paths import assert_inside, normalize
 from cellblock.store import Store
@@ -27,6 +27,14 @@ RECORD_LIMIT = 64 * 1024  # bytes of stdout/stderr kept per exec for `cellblock 
 COLLECT_LIMIT = 16 * 1024 * 1024  # chars per stream returned inline by the non-streaming endpoints
 RUNTIME_LANGS = {"python": ["python3", "-u"], "node": ["node"]}
 FILE_KINDS = {"f": "file", "d": "dir", "l": "symlink"}
+SNAPSHOT_CHUNK = 64 * 1024  # bytes per read when streaming a template to or from disk
+EXIT_KILLED = 137  # timeout(1) reports this when the command ignored SIGTERM and it had to SIGKILL
+
+
+def timed_out_by_limit(exit_code: int | None, elapsed_s: float, timeout_s: int) -> bool:
+    """A program can exit 124 on its own, and timeout(1) uses the same code. A run only counts as
+    timed out if it lasted as long as the limit; timeout(1) cannot fire earlier than that."""
+    return exit_code in (EXIT_TIMED_OUT, EXIT_KILLED) and elapsed_s >= timeout_s
 
 
 def _hash(raw: str) -> str:
@@ -105,6 +113,8 @@ class Service:
         template = self._owned_template(key_id, snapshot_id) if snapshot_id else None
         if template:
             spec = replace(spec, image=template["image"])
+        if spec.image not in self.settings.allowed_images:
+            raise ImageNotAllowed(f"image {spec.image!r} is not allowed; allowed: {', '.join(self.settings.allowed_images)}")
         with self._lock:
             self._check_quota(key_id)
             if template is None and spec == self.default_spec:
@@ -116,7 +126,8 @@ class Service:
         try:
             self.backend.create(sandbox_id, spec)
             if template:
-                self.backend.restore_workspace(sandbox_id, Path(template["path"]).read_bytes())
+                with Path(template["path"]).open("rb") as tar:
+                    self.backend.restore_workspace(sandbox_id, iter(lambda: tar.read(SNAPSHOT_CHUNK), b""))
         except Exception:
             self._retire(sandbox_id)
             raise
@@ -223,11 +234,14 @@ class Service:
         decoders = {k: codecs.getincrementaldecoder("utf-8")("replace") for k in ("stdout", "stderr")}
         recorded = {"stdout": "", "stderr": ""}
         exit_code: int | None = None
+        timed_out = False
+        started = time.monotonic()
         yield {"type": "started", "exec_id": exec_id}
         try:
             for kind, data in self.backend.exec_stream(sandbox_id, exec_id, argv, timeout_s):
                 if kind == "exit":
                     exit_code = data
+                    timed_out = timed_out_by_limit(exit_code, time.monotonic() - started, timeout_s)
                     break
                 text = decoders[kind].decode(data)
                 recorded[kind] = (recorded[kind] + text)[:RECORD_LIMIT]
@@ -235,10 +249,10 @@ class Service:
         finally:
             self.store.update("execs", exec_id, {
                 "status": "finished" if exit_code is not None else "aborted",
-                "exit_code": exit_code, "timed_out": int(exit_code == EXIT_TIMED_OUT),
+                "exit_code": exit_code, "timed_out": int(timed_out),
                 "stdout": recorded["stdout"], "stderr": recorded["stderr"], "finished_at": self.clock(),
             })
-        yield {"type": "exit", "exit_code": exit_code, "timed_out": exit_code == EXIT_TIMED_OUT}
+        yield {"type": "exit", "exit_code": exit_code, "timed_out": timed_out}
 
     def exec_collect(self, key_id: str, sandbox_id: str, argv: list[str], timeout_s: int) -> dict[str, Any]:
         return collect(self.exec_stream(key_id, sandbox_id, argv, timeout_s))
@@ -307,14 +321,21 @@ class Service:
     # ---- snapshots --------------------------------------------------------
     def snapshot(self, key_id: str, sandbox_id: str, name: str) -> dict[str, Any]:
         row = self._in_state(self._owned(key_id, sandbox_id), "running")
-        data = self.backend.snapshot_workspace(sandbox_id)
         template_id = new_id("tpl")
         self.settings.template_dir.mkdir(parents=True, exist_ok=True)
         path = self.settings.template_dir / f"{template_id}.tar"
-        path.write_bytes(data)
+        size = 0
+        try:
+            with path.open("wb") as tar:  # streamed to disk, so the tarball never sits whole in memory
+                for chunk in self.backend.snapshot_workspace(sandbox_id):
+                    tar.write(chunk)
+                    size += len(chunk)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
         self.store.insert("templates", {
             "id": template_id, "key_id": key_id, "name": name, "image": row["image"],
-            "source_sandbox_id": sandbox_id, "path": str(path), "size_bytes": len(data),
+            "source_sandbox_id": sandbox_id, "path": str(path), "size_bytes": size,
             "created_at": self.clock(),
         })
         return self._template_public(self.store.get("templates", template_id))
@@ -355,8 +376,14 @@ class Service:
         rows whose container vanished are marked lost."""
         live = self.backend.list_managed()
         rows = {r["id"]: r for r in self.store.sandboxes_in(("running", "paused", "pooled"))}
-        lost, synced = [], []
+        lost, synced, legacy = [], [], []
         for sandbox_id, row in rows.items():
+            if row["key_id"] is None and row["status"] != "pooled":
+                # Older builds left warm-pool containers as ownerless "running" rows. Nothing can claim
+                # them now, so remove the container and free the row.
+                legacy.append(sandbox_id)
+                self._retire(sandbox_id)
+                continue
             runtime = live.get(sandbox_id)
             if runtime not in ("running", "paused"):
                 lost.append(sandbox_id)
@@ -370,9 +397,9 @@ class Service:
             self.backend.destroy(sandbox_id)
         for row in self.store.sandboxes_in(("creating",)):
             self._retire(row["id"])
-        if lost or orphans:
-            log.info("reconcile: lost=%s orphans_removed=%s", lost, orphans)
-        return {"lost": lost, "orphans_removed": orphans, "synced": synced}
+        if lost or orphans or legacy:
+            log.info("reconcile: lost=%s orphans_removed=%s legacy_pool_removed=%s", lost, orphans, legacy)
+        return {"lost": lost, "orphans_removed": orphans, "synced": synced, "legacy_pool_removed": legacy}
 
     def shutdown(self) -> None:
         """Pooled containers have no owner, so they must not outlive the control plane.

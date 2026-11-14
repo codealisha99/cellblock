@@ -73,3 +73,15 @@ def test_run_code_python_and_history(service, key):
     result = collect(service.run_code(key, sid, "python", "print(sum(range(10)))", 20))
     assert result["stdout"] == "45\n" and result["exit_code"] == 0
     assert service.list_execs(key, sid)[0]["stdout"] == "45\n"
+
+
+def test_program_exiting_124_on_its_own_is_not_a_timeout(service, key):
+    sid = _sandbox(service, key)
+    result = collect(service.exec_stream(key, sid, ["sh", "-c", "exit 124"], 20))
+    assert (result["exit_code"], result["timed_out"]) == (124, False)
+
+
+def test_run_code_node_on_node_image(service, key):
+    sid = _sandbox(service, key, image="node:22-alpine")
+    result = collect(service.run_code(key, sid, "node", "console.log(6 * 7)", 20))
+    assert result["stdout"] == "42\n" and result["exit_code"] == 0

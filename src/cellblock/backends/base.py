@@ -7,7 +7,7 @@ network knobs onto the VM. The service layer would not change.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -39,5 +39,5 @@ class Backend(Protocol):
     def mkdir(self, sandbox_id: str, path: str) -> None: ...
     def read_file(self, sandbox_id: str, path: str) -> Iterator[bytes]: ...  # streamed; never fully buffered
     def write_file(self, sandbox_id: str, path: str, data: bytes) -> None: ...
-    def snapshot_workspace(self, sandbox_id: str) -> bytes: ...
-    def restore_workspace(self, sandbox_id: str, tar_bytes: bytes) -> None: ...
+    def snapshot_workspace(self, sandbox_id: str) -> Iterator[bytes]: ...  # streamed tar of /workspace
+    def restore_workspace(self, sandbox_id: str, tar_chunks: Iterable[bytes]) -> None: ...

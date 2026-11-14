@@ -1,3 +1,4 @@
+import os
 import time
 
 import pytest
@@ -99,3 +100,13 @@ def test_pooled_container_survives_restart_as_pooled(settings, backend):
     assert restarted.pool_ready() == 1
     restarted.shutdown()
     assert pooled not in backend.list_managed()  # so the shutdown guarantee still holds after a restart
+
+
+def test_snapshot_restore_streams_multi_chunk_workspace(service, key):
+    src = service.create_sandbox(key, _spec(workspace_mb=64), ttl_s=600)["id"]
+    blob = os.urandom(5 * 1024 * 1024)  # several 64 KiB chunks on both the save and the restore path
+    service.write_file(key, src, "big.bin", blob)
+    template = service.snapshot(key, src, "big")
+    assert template["size_bytes"] >= len(blob)
+    dst = service.create_sandbox(key, _spec(workspace_mb=64), ttl_s=600, snapshot_id=template["id"])["id"]
+    assert b"".join(service.read_file(key, dst, "big.bin")) == blob

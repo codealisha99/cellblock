@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import socket
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import docker
 from docker.errors import ImageNotFound, NotFound
@@ -32,6 +32,10 @@ _WRAPPER = (
     'wait "$pg"; rc=$?; kill -s KILL -- "-$pg" 2>/dev/null; rm -f "$f"; exit $rc'
 )
 _KILL = 'read pg < "/tmp/cb-exec-$1.pgid" && kill -s KILL -- "-$pg"'
+# Names the host by loopback inside the container. Without this, a network=true sandbox can reach the
+# control plane at host.docker.internal. Pinned to the container's own loopback, the name resolves to
+# nothing listening. The raw host gateway IP is still reachable; only a firewall rule closes that.
+HOST_ALIASES = {"host.docker.internal": "127.0.0.1", "gateway.docker.internal": "127.0.0.1"}
 EXEC_ID_RE = re.compile(r"^ex_[0-9a-f]{16}$")
 
 
@@ -78,6 +82,7 @@ class DockerBackend:
                 "/tmp": TMP_OPTIONS,
             },
             ulimits=[Ulimit(name="nofile", soft=1024, hard=1024)],
+            extra_hosts=HOST_ALIASES,
         )
         container.start()
 
@@ -147,20 +152,29 @@ class DockerBackend:
     def write_file(self, sandbox_id: str, path: str, data: bytes) -> None:
         self._exec_with_stdin(sandbox_id, ["sh", "-c", 'cat > "$1"', "cb-write", path], data)
 
-    def snapshot_workspace(self, sandbox_id: str) -> bytes:
-        return self._run(sandbox_id, ["tar", "-C", WORKSPACE, "-cf", "-", "."])
+    def snapshot_workspace(self, sandbox_id: str) -> Iterator[bytes]:
+        argv = ["tar", "-C", WORKSPACE, "-cf", "-", "."]
+        api = self.client.api
+        created = api.exec_create(container_name(sandbox_id), argv, stdout=True, stderr=True)
+        for stdout, _stderr in api.exec_start(created["Id"], stream=True, demux=True):
+            if stdout:
+                yield stdout
+        code = api.exec_inspect(created["Id"])["ExitCode"]
+        if code != 0:
+            raise RuntimeError(f"snapshot failed (exit {code})")
 
-    def restore_workspace(self, sandbox_id: str, tar_bytes: bytes) -> None:
-        self._exec_with_stdin(sandbox_id, ["tar", "-C", WORKSPACE, "-xf", "-"], tar_bytes)
+    def restore_workspace(self, sandbox_id: str, tar_chunks: Iterable[bytes]) -> None:
+        self._exec_with_stdin(sandbox_id, ["tar", "-C", WORKSPACE, "-xf", "-"], tar_chunks)
 
-    def _exec_with_stdin(self, sandbox_id: str, argv: list[str], data: bytes) -> None:
-        """Pipe `data` to a command's stdin and fail if it exits non-zero."""
+    def _exec_with_stdin(self, sandbox_id: str, argv: list[str], data: bytes | Iterable[bytes]) -> None:
+        """Pipe `data` (one buffer or a stream of chunks) to a command's stdin and fail if it exits non-zero."""
         api = self.client.api
         created = api.exec_create(container_name(sandbox_id), argv, stdin=True, stdout=True, stderr=True)
         sock = api.exec_start(created["Id"], socket=True)
         raw = getattr(sock, "_sock", sock)
         try:
-            raw.sendall(data)
+            for chunk in ([data] if isinstance(data, bytes) else data):
+                raw.sendall(chunk)
             raw.shutdown(socket.SHUT_WR)  # EOF tells the command its input is complete
             while raw.recv(65536):
                 pass

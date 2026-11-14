@@ -1,3 +1,6 @@
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
 
 from cellblock.backends.base import SandboxSpec
@@ -69,3 +72,28 @@ def test_workspace_is_size_limited(service, key, sb):
 def test_cannot_write_outside_workspace(service, key, sb):
     out = _run(service, key, sb, "echo x > /usr/local/evil 2>&1; echo rc=$?; echo y > /home/evil 2>&1; echo rc=$?")
     assert out["stdout"].count("rc=0") == 0
+
+
+class _HostService(BaseHTTPRequestHandler):
+    def do_GET(self):  # stands in for the control plane on the host
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"host-service")
+
+    def log_message(self, *args):
+        pass
+
+
+def test_networked_sandbox_cannot_reach_host_service_by_name(service, key):
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _HostService)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        spec = SandboxSpec(image="python:3.12-slim", cpu=1.0, memory_mb=128, pids=64, network=True, workspace_mb=16)
+        sid = service.create_sandbox(key, spec, ttl_s=600)["id"]
+        port = server.server_address[1]
+        probe = (f"python3 -c \"import urllib.request as u; "
+                 f"print(u.urlopen('http://host.docker.internal:{port}/', timeout=3).read().decode())\" 2>&1; echo rc=$?")
+        out = _run(service, key, sid, probe)
+        assert "host-service" not in out["stdout"] and "rc=0" not in out["stdout"]
+    finally:
+        server.shutdown()

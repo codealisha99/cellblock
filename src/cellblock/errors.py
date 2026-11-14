@@ -23,3 +23,7 @@ class Conflict(CellblockError):
 
 class QuotaExceeded(CellblockError):
     status_code = 429
+
+
+class ImageNotAllowed(CellblockError):
+    status_code = 422
