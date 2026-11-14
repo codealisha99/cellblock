@@ -37,7 +37,7 @@ isolated home, runs the agent example through the SDK, prints cold vs warm creat
 ```bash
 make install        # uv sync (Python 3.12) + pnpm install (TS SDK)
 make demo           # keyless end-to-end run
-make test           # 45 Python tests (unit + real-Docker integration)
+make test           # 53 Python tests (unit + real-Docker integration)
 make test-ts        # 5 TypeScript SDK tests (starts its own server on :4300)
 ```
 
@@ -91,17 +91,18 @@ await sb.delete();
 | POST | `/sandboxes` | create (`image`, `snapshot_id`, `cpu`, `memory_mb`, `pids`, `network`, `workspace_mb`, `ttl_seconds`) |
 | GET / GET / DELETE | `/sandboxes[/{id}]` | list, get, destroy |
 | POST | `/sandboxes/{id}/pause`, `/resume` | freeze / thaw |
-| POST | `/sandboxes/{id}/exec` | run argv or a shell string, JSON result |
+| POST | `/sandboxes/{id}/exec` | run argv or a shell string, JSON result (each stream capped at 16 MiB, `truncated` flags a cut) |
 | POST | `/sandboxes/{id}/exec/stream` | same, as SSE: `started`, `stdout`, `stderr`, `exit` |
 | POST | `/sandboxes/{id}/code[/stream]` | run python or node snippet |
 | POST | `/sandboxes/{id}/execs/{exec_id}/kill` | kill a running exec and its descendants |
 | GET | `/sandboxes/{id}/execs` | exec history with capped output |
-| GET / PUT | `/sandboxes/{id}/files?path=`, `/files/content?path=` | list, download, upload (raw body) |
+| GET / PUT | `/sandboxes/{id}/files?path=`, `/files/content?path=` | list, download (streamed), upload (raw body, max 100 MiB) |
 | POST / GET / DELETE | `/sandboxes/{id}/snapshots`, `/templates[/{id}]` | snapshot workspace, manage templates |
 | GET | `/healthz` | liveness and warm-pool depth (no auth) |
 
-Errors are `{"error": "..."}` with 400 (bad path or input), 401, 404 (also for other keys' sandboxes),
-409 (wrong state, e.g. exec on a paused sandbox), 429 (quota), 422 (schema).
+Domain errors are `{"error": "..."}` with 400 (bad path or input), 401, 404 (also for other keys' sandboxes),
+409 (wrong state, e.g. exec on a paused sandbox), 429 (quota). Schema errors (422) and unknown routes (404/405)
+come from FastAPI and use `{"detail": ...}` instead.
 
 ## How the hard parts are solved
 
@@ -164,6 +165,9 @@ What it **does not** protect against:
 - **Network egress control.** `network=true` is a bridge with full outbound access. There is no allowlist, no
   DNS policy, and no metadata-endpoint blocking.
 - **Side channels and noisy neighbours.** CPU and cache timing, and host disk I/O, are shared.
+- **The control plane is reachable from `network=true` sandboxes.** Verified on Docker Desktop: a bridge sandbox
+  can open `host.docker.internal:4300` and get the API's 401. Every endpoint still needs a valid key, but do not
+  run untrusted code with networking unless you accept that the API port is reachable from it.
 - **Processes that leave the process group.** A process that calls `setsid`/double-forks escapes the group reap.
   It stays inside the memory and pids limits, and it dies when the sandbox is deleted.
 - **Symlink races.** The file-path check is a time-of-check. The container user could swap a symlink between
@@ -195,5 +199,9 @@ What it **does not** protect against:
 - **A client disconnect does not kill the exec.** It runs until its timeout. Killing on disconnect is a few lines.
 - **No rate limiting, no TLS.** Put it behind a reverse proxy.
 - **Pause does not release memory,** and the warm pool serves only the default profile.
+- **Snapshot and restore buffer the whole tarball in control-plane memory** (up to `workspace_mb`, 2 GiB). Templates
+  have no per-key disk quota. Downloads are streamed; snapshots are not yet.
+- **Any image name is accepted.** The control plane pulls whatever a client asks for; there is no allowlist.
+- **A program that exits 124 on its own is reported as `timed_out: true`.** The timeout wrapper uses the same code.
 - **Single-node.** No multi-host scheduling, no persistence of exec output beyond 64 KB, no metrics endpoint.
 - **TS SDK is not published.** Tests run on Node type stripping; `pnpm typecheck` passes.
