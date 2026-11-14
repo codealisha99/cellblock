@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cellblock: sandboxes for code an AI agent wrote</title>
+  <meta name="description" content="cellblock starts hardened Docker containers on demand for AI agents, streams output as it runs, moves files, snapshots workspaces, and reaps abandoned sandboxes. Recorded real run, honest limits.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="cellblock: sandboxes for code an AI agent wrote">
+  <meta property="og:description" content="Hardened containers on demand for agent-written code, with a recorded run and an honest list of what isolation does not cover.">
+  <meta name="twitter:card" content="summary">
+  <meta name="theme-color" content="#15191C">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <a class="mark" href="#top" aria-label="cellblock home">cellblock</a>
+    <nav aria-label="Primary">
+      <a href="#run">Recorded run</a>
+      <a href="#limits">Limits</a>
+      <a href="#use">Use it</a>
+      <a href="https://github.com/codealisha99/cellblock">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1>Sandboxes for code an AI agent wrote.</h1>
+      <p class="lede">cellblock starts a hardened container on demand, streams the output back while the code runs,
+        moves files in and out, snapshots a workspace, and removes anything left behind. It is an HTTP service on
+        port 4300 with Python and TypeScript SDKs.</p>
+
+      <aside class="status" aria-label="Live demo status">
+        <p><strong>No live demo.</strong> This page has no backend and runs no visitor code. Containers share the
+          host kernel, which is not a boundary to trust with strangers' code, so there is nothing to try here. The
+          replay below is a recording of a real run.</p>
+      </aside>
+
+      <div class="boundary" aria-hidden="true"></div>
+    </section>
+
+    <section id="run" class="block">
+      <div class="block-head">
+        <h2>A real run, replayed</h2>
+        <p>Every line is what the sandbox returned when <code>scripts/record_session.py</code> ran against Docker
+          29.7.2. The fork bomb, the memory limit, and the network probe are not simulated.</p>
+      </div>
+      <div class="terminal" id="terminal" role="region" aria-label="Recorded terminal session">
+        <div class="term-bar">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="term-title">recorded session</span>
+          <button type="button" id="replay" class="btn" disabled>Replay</button>
+        </div>
+        <pre class="term-body" id="term-body" tabindex="0"><span class="muted">Loading recording...</span></pre>
+      </div>
+    </section>
+
+    <section class="block split">
+      <div>
+        <h2>The hard part is stopping code</h2>
+        <p>Starting a container is easy. Stopping model-written code is not. A fork bomb must not wedge the sandbox.
+          A timeout must take its grandchildren with it. SQLite and Docker must agree after a crash. Warm create
+          should cost a database update, and cold create should stay honest about its cost.</p>
+      </div>
+      <div class="prose">
+        <p>Each exec runs in its own session. Its process group is recorded in a tmpfs file, so a kill needs only shell
+          builtins. Once a fork bomb has used up the pids budget, a forked <code>grep</code> cannot start, and that
+          is exactly the failure a test found and this design fixes.</p>
+        <p>Paths are normalized on the host, and then the symlink-resolved path is checked again inside the container
+          before any read or write. Startup reconciliation removes containers with no row and marks rows whose
+          container has gone as lost.</p>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>Create latency, measured on this machine</h2>
+        <p id="latency-caption">Loading samples...</p>
+      </div>
+      <div class="chart" id="chart" aria-label="Create latency range chart"></div>
+    </section>
+
+    <section id="limits" class="block">
+      <div class="block-head">
+        <h2>What the hardening blocks, and what it does not</h2>
+        <p>The left column is each probe from the replay with its observed result. The right column is what a
+          container boundary leaves open. Read both before running anything you did not write.</p>
+      </div>
+      <div class="limits">
+        <div>
+          <h3>Blocked, observed in the run</h3>
+          <ul class="ticks">
+            <li><span>Fork bomb.</span> The pids cap stopped it, and the sandbox ran <code>echo</code> afterwards.</li>
+            <li><span>400 MiB allocation under a 256 MiB limit.</span> Killed with exit 137. Swap is disabled.</li>
+            <li><span>Outbound connection with networking off.</span> Network is unreachable.</li>
+            <li><span>Writes to <code>/usr/local</code> and <code>/etc</code>.</span> Read-only file system.</li>
+            <li><span>Path traversal through the file API.</span> Rejected with HTTP 400 before reaching the container.</li>
+            <li><span>Networked sandbox reaching the control plane by name.</span> Connection refused, because
+              <code>host.docker.internal</code> resolves to the sandbox's own loopback.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Not blocked by a container</h3>
+          <ul class="crosses">
+            <li><span>Kernel exploits.</span> All containers share the host kernel. Untrusted code in production
+              needs a microVM such as Firecracker or Kata, or gVisor.</li>
+            <li><span>Network egress.</span> <code>network=true</code> is a bridge with full outbound access. There is
+              no allowlist and no DNS policy.</li>
+            <li><span>The host gateway IP.</span> A networked sandbox can still reach the host by its bridge IP. Only
+              a firewall rule closes that, and this project does not manage one.</li>
+            <li><span>Side channels and noisy neighbours.</span> CPU caches, timing, and host disk I/O are shared.</li>
+            <li><span>Processes that leave the group.</span> A <code>setsid</code> double-fork escapes the group kill.
+              It stays within memory and pids limits and dies when the sandbox is deleted.</li>
+            <li><span>Symlink races.</span> The path check is a time-of-check. The container boundary is the real one.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="block-head">
+        <h2>How it is put together</h2>
+        <p>One control plane, one state file, one backend seam. A Firecracker backend would implement the same
+          interface. Nothing above the seam changes, but it is not built.</p>
+      </div>
+      <figure class="diagram">
+        <svg viewBox="0 0 880 330" role="img" aria-labelledby="arch-title arch-desc">
+          <title id="arch-title">Architecture</title>
+          <desc id="arch-desc">Python SDK, TypeScript SDK, CLI and an agent loop call the control plane on port 4300 with a bearer key. The control plane uses SQLite for state and a backend protocol. The Docker backend runs hardened containers. A dashed line marks the host kernel boundary, and a dotted Firecracker box is marked as not built.</desc>
+          <g class="d-clients">
+            <rect x="10" y="20" width="200" height="50" rx="2"/><text x="24" y="50">Python SDK</text>
+            <rect x="10" y="90" width="200" height="50" rx="2"/><text x="24" y="120">TypeScript SDK</text>
+            <rect x="10" y="160" width="200" height="50" rx="2"/><text x="24" y="190">cellblock CLI</text>
+            <rect x="10" y="230" width="200" height="50" rx="2"/><text x="24" y="260">Agent tool loop</text>
+          </g>
+          <g class="d-arrow"><path d="M212 165 H262"/><path d="M256 159 L262 165 L256 171"/></g>
+          <g class="d-plane">
+            <rect x="268" y="20" width="250" height="260" rx="2"/>
+            <text x="284" y="48" class="d-strong">Control plane :4300</text>
+            <text x="284" y="76">FastAPI routes, bearer auth</text>
+            <text x="284" y="100">Quota and per-key limits</text>
+            <text x="284" y="124">Warm pool, TTL reaper</text>
+            <text x="284" y="148">Exec recording, file path rules</text>
+            <text x="284" y="172">Startup reconciliation</text>
+            <rect x="284" y="200" width="218" height="44" rx="2" class="d-inner"/>
+            <text x="296" y="227">SQLite state (WAL)</text>
+          </g>
+          <g class="d-arrow"><path d="M522 165 H572"/><path d="M566 159 L572 165 L566 171"/></g>
+          <g class="d-backend">
+            <rect x="578" y="20" width="290" height="110" rx="2"/>
+            <text x="594" y="48" class="d-strong">Backend protocol</text>
+            <text x="594" y="76">DockerBackend: hardened containers</text>
+            <text x="594" y="100">Firecracker, not built (KVM host needed)</text>
+          </g>
+          <line class="d-boundary" x1="578" y1="150" x2="868" y2="150"/>
+          <text class="d-label" x="578" y="172">host kernel boundary: containers share it</text>
+          <g class="d-sandboxes">
+            <rect x="578" y="190" width="132" height="90" rx="2"/>
+            <text x="590" y="216">sandbox</text>
+            <text x="590" y="236">uid 1000</text>
+            <text x="590" y="256">cap-drop ALL</text>
+            <text x="590" y="272">read-only root</text>
+            <rect x="724" y="190" width="144" height="90" rx="2"/>
+            <text x="736" y="216">warm pool</text>
+            <text x="736" y="236">pre-started</text>
+            <text x="736" y="256">claimed by a row</text>
+          </g>
+          <line class="d-hz" x1="578" y1="300" x2="868" y2="300"/>
+          <text class="d-label" x="578" y="320">network off by default</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section id="use" class="block">
+      <div class="block-head">
+        <h2>Use it</h2>
+        <p>The keyless demo needs only Docker and <code>uv</code>. It starts the server on :4300 with an isolated
+          home, runs the agent example through the SDK, measures create latency, and cleans up.</p>
+      </div>
+      <pre class="code"><code>make install        # uv sync (Python 3.12) + pnpm install (TS SDK)
+make demo           # keyless end-to-end run
+make test           # 62 Python tests (unit + real-Docker integration)
+make test-ts        # 5 TypeScript SDK tests (starts its own server on :4300)</code></pre>
+
+      <div class="snippets">
+        <div>
+          <h3>Python</h3>
+          <pre class="code"><code>from cellblock_sdk import Sandbox
+
+with Sandbox(memory_mb=256, ttl_seconds=600) as sb:
+    print(sb.run_code("print(sum(range(10)))").stdout)   # "45\n"
+    sb.exec("pip --version", on_stdout=print)            # streams as it arrives
+    sb.files.write("app/main.py", "print('hi')")
+    template = sb.snapshot("with-app")                   # save /workspace
+with Sandbox(snapshot_id=template["id"]) as sb2:         # restored files are present
+    print(sb2.files.read_text("app/main.py"))</code></pre>
+        </div>
+        <div>
+          <h3>TypeScript</h3>
+          <pre class="code"><code>import { Sandbox } from "./sdk/ts/src/index.ts";
+
+const sb = await Sandbox.create({ memoryMb: 256 });
+await sb.runCode("print('hi')", {
+  onStdout: (chunk) => process.stdout.write(chunk),
+});
+await sb.delete();</code></pre>
+          <p class="note">The TypeScript SDK is not published to npm. It is imported from the repository for now.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="block closing">
+      <h2>Known limits</h2>
+      <ul class="plain">
+        <li>Single node. No multi-host scheduling and no metrics endpoint.</li>
+        <li>No TLS and no rate limiting. Put it behind a reverse proxy.</li>
+        <li>The live model path has not been run against the Anthropic API. The build had no key, and the demo uses a scripted model.</li>
+        <li><code>run_code</code> in <code>node</code> needs a node image. <code>node:22-alpine</code> is on the allowlist and tested.</li>
+        <li>Images must be on the allowlist, and templates have no per-key disk quota.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>MIT licensed. <a href="https://github.com/codealisha99/cellblock">Source on GitHub</a>. Live demo: none, for the
+      reasons above.</p>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

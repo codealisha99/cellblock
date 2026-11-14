@@ -1,4 +1,4 @@
-.PHONY: install test test-ts demo serve
+.PHONY: install test test-ts demo record serve
 
 install:
 	uv sync
@@ -12,6 +12,9 @@ test-ts:
 
 demo:
 	uv run python scripts/demo.py
+
+record:
+	uv run python scripts/record_session.py  # regenerates site/data from a real Docker run
 
 serve:
 	uv run cellblock serve

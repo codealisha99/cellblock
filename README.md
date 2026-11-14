@@ -9,6 +9,11 @@ The hard parts: making exec **containable and killable** (a fork bomb must not w
 timeout must take the grandchildren with it), keeping **SQLite and Docker in agreement** across crashes,
 and getting **warm create** down to a row update while cold create stays honest about its cost.
 
+**Landing page:** https://cellblock-site.vercel.app (recorded run, latency, limits, SDK snippets)
+
+**Live demo:** none. The control plane needs a Docker daemon, and it must not run visitors' code on shared-kernel
+containers. Run it locally with the quickstart below.
+
 ```mermaid
 flowchart LR
   subgraph Clients
@@ -37,8 +42,9 @@ isolated home, runs the agent example through the SDK, prints cold vs warm creat
 ```bash
 make install        # uv sync (Python 3.12) + pnpm install (TS SDK)
 make demo           # keyless end-to-end run
-make test           # 53 Python tests (unit + real-Docker integration)
+make test           # 62 Python tests (unit + real-Docker integration)
 make test-ts        # 5 TypeScript SDK tests (starts its own server on :4300)
+make record         # re-record site/data from a real Docker run (landing page evidence)
 ```
 
 Running the server yourself:
@@ -88,7 +94,7 @@ await sb.delete();
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/sandboxes` | create (`image`, `snapshot_id`, `cpu`, `memory_mb`, `pids`, `network`, `workspace_mb`, `ttl_seconds`) |
+| POST | `/sandboxes` | create (`image` must be in `CELLBLOCK_ALLOWED_IMAGES`, `snapshot_id`, `cpu`, `memory_mb`, `pids`, `network`, `workspace_mb`, `ttl_seconds`) |
 | GET / GET / DELETE | `/sandboxes[/{id}]` | list, get, destroy |
 | POST | `/sandboxes/{id}/pause`, `/resume` | freeze / thaw |
 | POST | `/sandboxes/{id}/exec` | run argv or a shell string, JSON result (each stream capped at 16 MiB, `truncated` flags a cut) |
@@ -97,12 +103,12 @@ await sb.delete();
 | POST | `/sandboxes/{id}/execs/{exec_id}/kill` | kill a running exec and its descendants |
 | GET | `/sandboxes/{id}/execs` | exec history with capped output |
 | GET / PUT | `/sandboxes/{id}/files?path=`, `/files/content?path=` | list, download (streamed), upload (raw body, max 100 MiB) |
-| POST / GET / DELETE | `/sandboxes/{id}/snapshots`, `/templates[/{id}]` | snapshot workspace, manage templates |
+| POST / GET / DELETE | `/sandboxes/{id}/snapshots`, `/templates[/{id}]` | snapshot workspace (streamed to disk), manage templates |
 | GET | `/healthz` | liveness and warm-pool depth (no auth) |
 
 Domain errors are `{"error": "..."}` with 400 (bad path or input), 401, 404 (also for other keys' sandboxes),
-409 (wrong state, e.g. exec on a paused sandbox), 429 (quota). Schema errors (422) and unknown routes (404/405)
-come from FastAPI and use `{"detail": ...}` instead.
+409 (wrong state, e.g. exec on a paused sandbox), 422 (image not in the allowlist), 429 (quota). Schema errors (422)
+and unknown routes (404/405) come from FastAPI and use `{"detail": ...}` instead.
 
 ## How the hard parts are solved
 
@@ -127,16 +133,17 @@ come from FastAPI and use `{"detail": ...}` instead.
 
 ## Measured latency
 
-From `make demo` (Docker Desktop on an M-series Mac, `python:3.12-slim` already cached, 3 samples each,
-measured client-side around the SDK call):
+From `scripts/record_session.py` (Docker Desktop 29.7.2 on an M-series Mac, `python:3.12-slim` cached, warm
+pool of 4, 20 samples each, measured client-side around the SDK call; raw values in `site/data/latency.json`):
 
-| Path | Median | Samples (ms) |
-|---|---|---|
-| cold (`cpu=0.5`, off the pooled profile, so it can't claim a warm container) | 78.8 ms | 76.0, 78.8, 79.7 |
-| warm (default profile, claimed from the pool) | 2.1 ms | 2.1, 2.1, 2.3 |
+| Path | Median | Min | Max | Samples |
+|---|---|---|---|---|
+| cold (`cpu=0.5`, off the pooled profile, so it can't claim a warm container) | 222.1 ms | 186.4 ms | 369.4 ms | 20 |
+| warm (default profile, claimed from the pool) | 3.5 ms | 2.2 ms | 7.6 ms | 20 |
 
-Warm is about 37x faster. Note what warm does not include: the warm path is a DB update, so it does not
-measure the first exec's latency or the cost of replenishing the pool in the background.
+Warm is about 63x faster at the median. Note what warm does not include: the warm path is a DB update, so it does not
+measure the first exec's latency or the cost of replenishing the pool in the background. `make demo` prints the same
+comparison with 3 samples.
 
 ## Isolation: what this is and what it is not
 
@@ -165,9 +172,11 @@ What it **does not** protect against:
 - **Network egress control.** `network=true` is a bridge with full outbound access. There is no allowlist, no
   DNS policy, and no metadata-endpoint blocking.
 - **Side channels and noisy neighbours.** CPU and cache timing, and host disk I/O, are shared.
-- **The control plane is reachable from `network=true` sandboxes.** Verified on Docker Desktop: a bridge sandbox
-  can open `host.docker.internal:4300` and get the API's 401. Every endpoint still needs a valid key, but do not
-  run untrusted code with networking unless you accept that the API port is reachable from it.
+- **The control plane is reachable from `network=true` sandboxes by IP.** `host.docker.internal` and
+  `gateway.docker.internal` are pinned to the container's own loopback, so the name no longer reaches the host
+  (tested). The host's bridge gateway IP still does, and so does any other host service bound to it. Every
+  endpoint needs a valid key, but do not run untrusted code with networking unless you accept that the host
+  network is reachable from it. Closing that needs a firewall rule, which this project does not manage.
 - **Processes that leave the process group.** A process that calls `setsid`/double-forks escapes the group reap.
   It stays inside the memory and pids limits, and it dies when the sandbox is deleted.
 - **Symlink races.** The file-path check is a time-of-check. The container user could swap a symlink between
@@ -188,20 +197,21 @@ What it **does not** protect against:
 
 ## Limitations and next steps
 
-- **The live-model path is not verified.** `examples/agent/model.py` constructs `AnthropicModel` with a dummy
-  key and selects the right model, but no call to the Anthropic API was made. The keyless demo uses the scripted
-  model. The live path is the next thing to run.
+- **The live-model path is not exercised.** The build environment has no Anthropic API key, so
+  `examples/agent/model.py` has only been checked to construct the client and pick the model. The keyless demo
+  and its tests use the scripted model.
 - **No Firecracker backend.** This needs a KVM host (Linux). The seam is ready for it.
-- **`run_code` with `language="node"` requires an image that has `node`.** The default image is Python-only.
-  Node execution is covered by the code path but not by a test.
+- **`run_code` with `language="node"` needs a node image.** The default image is Python-only. `node:22-alpine` is
+  on the allowlist and has a test (`test_run_code_node_on_node_image`).
 - **The CLI has no automated tests.** Its `ls`, `exec`, `logs`, and `rm` were verified with a manual smoke run
-  against a live server (exit-code propagation included). Coverage is 86% for the rest of the Python code.
+  against a live server (exit-code propagation included). No coverage figure is claimed; the suite has no coverage
+  tooling configured.
 - **A client disconnect does not kill the exec.** It runs until its timeout. Killing on disconnect is a few lines.
 - **No rate limiting, no TLS.** Put it behind a reverse proxy.
 - **Pause does not release memory,** and the warm pool serves only the default profile.
-- **Snapshot and restore buffer the whole tarball in control-plane memory** (up to `workspace_mb`, 2 GiB). Templates
-  have no per-key disk quota. Downloads are streamed; snapshots are not yet.
-- **Any image name is accepted.** The control plane pulls whatever a client asks for; there is no allowlist.
-- **A program that exits 124 on its own is reported as `timed_out: true`.** The timeout wrapper uses the same code.
+- **Templates have no per-key disk quota.** Snapshots and restores stream through 64 KiB chunks, so memory stays
+  flat, but a template is bounded only by the sandbox's `workspace_mb` (2 GiB maximum).
+- **Images are allowlisted.** Only images in `CELLBLOCK_ALLOWED_IMAGES` (default `python:3.12-slim`, `node:22-alpine`)
+  can be created; others get 422. The allowlist is a name check; it does not pin digests.
 - **Single-node.** No multi-host scheduling, no persistence of exec output beyond 64 KB, no metrics endpoint.
 - **TS SDK is not published.** Tests run on Node type stripping; `pnpm typecheck` passes.
